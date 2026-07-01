@@ -1,4 +1,8 @@
+import base64
+import binascii
 import os
+import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
@@ -124,6 +128,52 @@ def ensure_drive_folder_path(drive_service, root_parent_id: str, relative_path: 
 def get_image_mime_type(path: str) -> str | None:
     ext = Path(path).suffix.lower()
     return SUPPORTED_IMAGE_EXTENSIONS.get(ext)
+
+
+_DATA_URI_PATTERN = re.compile(
+    r"data:(image/(?:png|jpeg|jpg|gif));base64,([A-Za-z0-9+/=\s]+)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def materialize_data_uri_image(data_uri: str) -> str | None:
+    """Write a supported data: image URI to a temporary file for Drive upload."""
+    match = _DATA_URI_PATTERN.match(data_uri.strip())
+    if not match:
+        return None
+
+    mime = match.group(1).lower().replace("jpg", "jpeg")
+    extension = next(
+        (ext for ext, supported in SUPPORTED_IMAGE_EXTENSIONS.items() if supported == mime),
+        None,
+    )
+    if extension is None:
+        return None
+
+    try:
+        image_bytes = base64.b64decode(match.group(2), validate=True)
+    except (ValueError, binascii.Error):
+        return None
+
+    temp_file = tempfile.NamedTemporaryFile(
+        delete=False,
+        prefix="obsidian_embed_",
+        suffix=extension,
+    )
+    try:
+        temp_file.write(image_bytes)
+        temp_file.close()
+        return temp_file.name
+    except OSError:
+        temp_file.close()
+        os.unlink(temp_file.name)
+        return None
+
+
+def format_missing_image_text(alt_text: str, img_ref: str) -> str:
+    if img_ref.lower().startswith("data:") or len(img_ref) > 200:
+        return f"[Image not found: {alt_text}]\n"
+    return f"[Image not found: {alt_text} ({img_ref})]\n"
 
 
 def upload_image(drive_service, image_path: str, parent_folder_id: str) -> UploadedDriveImage | None:

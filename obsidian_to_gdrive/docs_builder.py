@@ -68,13 +68,21 @@ def make_text_style_request(tab_id: str, start: int, end: int, run: InlineRun) -
     }
 
 
-def add_list_formatting(requests: list[dict], segments: list[BlockSegment], tab_id: str) -> None:
-    """Apply bullets to contiguous list runs.
+def build_list_formatting_batches(
+    segments: list[BlockSegment],
+    tab_id: str,
+    insert_index: int,
+    inserted_length: int,
+) -> list[list[dict]]:
+    """Build one API batch per contiguous list group.
 
-    Google Docs sets nesting level from leading tab characters in the text, then
-    strips those tabs when bullets are created. One request per contiguous list
-    block keeps items in the same outline.
+    Google Docs reads leading tabs for nesting, then strips them. Each group is
+    applied in its own batch so later ranges are shifted by tabs already removed.
     """
+    batches: list[list[dict]] = []
+    tabs_stripped = 0
+    doc_end = insert_index + inserted_length - 1
+
     i = 0
     while i < len(segments):
         block = segments[i].block
@@ -89,27 +97,35 @@ def add_list_formatting(requests: list[dict], segments: list[BlockSegment], tab_
 
         group = segments[start:i]
         ordered = list_kind == BlockKind.ORDERED_ITEM
-        requests.append(
-            {
-                "createParagraphBullets": {
-                    "range": make_range(tab_id, group[0].start_index, group[-1].end_index),
-                    "bulletPreset": (
-                        "NUMBERED_DECIMAL_ALPHA_ROMAN"
-                        if ordered
-                        else "BULLET_DISC_CIRCLE_SQUARE"
-                    ),
+        adjusted_start = group[0].start_index - tabs_stripped
+        adjusted_end = min(group[-1].end_index - tabs_stripped, doc_end - tabs_stripped)
+        tabs_stripped += sum(segment.block.list_indent for segment in group)
+
+        batches.append(
+            [
+                {
+                    "createParagraphBullets": {
+                        "range": make_range(tab_id, adjusted_start, adjusted_end),
+                        "bulletPreset": (
+                            "NUMBERED_DECIMAL_ALPHA_ROMAN"
+                            if ordered
+                            else "BULLET_DISC_CIRCLE_SQUARE"
+                        ),
+                    }
                 }
-            }
+            ]
         )
+
+    return batches
 
 
 def build_markdown_requests_from_blocks(
     blocks: list[MarkdownBlock],
     tab_id: str,
     insert_index: int,
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], list[list[dict]], int]:
     if not blocks:
-        return [], 0
+        return [], [], 0
 
     plain_parts: list[str] = []
     segments: list[BlockSegment] = []
@@ -123,7 +139,7 @@ def build_markdown_requests_from_blocks(
         segments.append(BlockSegment(block=block, start_index=start, end_index=start + len(text)))
 
     if not plain_parts:
-        return [], 0
+        return [], [], 0
 
     all_text = "".join(plain_parts)
     requests: list[dict] = [make_insert_text_request(all_text, tab_id, insert_index)]
@@ -194,12 +210,18 @@ def build_markdown_requests_from_blocks(
             if style_request:
                 requests.append(style_request)
 
-    add_list_formatting(requests, segments, tab_id)
-    return requests, len(all_text)
+    list_batches = build_list_formatting_batches(
+        segments, tab_id, insert_index, len(all_text)
+    )
+    return requests, list_batches, len(all_text)
 
 
-def build_markdown_requests(markdown: str, tab_id: str, insert_index: int) -> tuple[list[dict], int]:
-    return build_markdown_requests_from_blocks(parse_markdown_blocks(markdown), tab_id, insert_index)
+def build_markdown_requests(
+    markdown: str, tab_id: str, insert_index: int
+) -> tuple[list[dict], list[list[dict]], int]:
+    return build_markdown_requests_from_blocks(
+        parse_markdown_blocks(markdown), tab_id, insert_index
+    )
 
 
 def find_table_at_or_after_index(doc: dict, tab_id: str, insert_location_index: int) -> dict | None:

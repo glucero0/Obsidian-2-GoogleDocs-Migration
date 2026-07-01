@@ -260,6 +260,5 @@ def block_plain_text(block: MarkdownBlock) -> str:
         return block.text + "\n"
     text = runs_to_plain(block.runs)
     if block.kind in (BlockKind.BULLET_ITEM, BlockKind.ORDERED_ITEM):
-        # Google Docs derives list nesting from leading tabs at bullet-creation time.
         text = ("\t" * block.list_indent) + text
     return text + "\n"

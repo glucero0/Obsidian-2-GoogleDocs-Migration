@@ -1,5 +1,6 @@
 DRIVE_MIGRATION_FOLDER_NAME = "Obsidian Migration"
 MIGRATION_COMPLETE_MARKER = "obsidian-migration-complete:v1"
+MIGRATION_ENGINE_VERSION = "2026-07-01-embedded-images"
 
 # Google Docs/Drive quotas: 60 read and 60 write requests per user per minute.
 # 1100ms spacing keeps sustained traffic under ~54 requests/minute.

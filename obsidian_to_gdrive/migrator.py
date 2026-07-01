@@ -2,7 +2,7 @@ import os
 import re
 import time
 
-from .constants import DRIVE_MIGRATION_FOLDER_NAME, MILLISECONDS_BETWEEN_FOLDERS
+from .constants import DRIVE_MIGRATION_FOLDER_NAME, MILLISECONDS_BETWEEN_FOLDERS, MIGRATION_ENGINE_VERSION
 from .docs_builder import (
     _find_tab,
     build_markdown_requests_from_blocks,
@@ -19,7 +19,9 @@ from .drive_client import (
     ensure_drive_folder,
     ensure_drive_folder_path,
     find_drive_doc,
+    format_missing_image_text,
     is_migration_complete,
+    materialize_data_uri_image,
     resolve_image_path,
     retry_pending_image_revocations,
     stamp_migration_complete,
@@ -65,14 +67,28 @@ def get_tab_insert_index(docs_service, doc_id: str, tab_id: str) -> int:
     return content[-1].get("endIndex", 2) - 1
 
 
-def execute_requests(docs_service, doc_id: str, requests: list[dict]) -> None:
+def execute_requests(
+    docs_service,
+    doc_id: str,
+    requests: list[dict],
+    context: str = "",
+) -> None:
     if not requests:
         return
-    throttle_and_execute(
-        lambda: docs_service.documents()
-        .batchUpdate(documentId=doc_id, body={"requests": requests})
-        .execute()
-    )
+    try:
+        throttle_and_execute(
+            lambda: docs_service.documents()
+            .batchUpdate(documentId=doc_id, body={"requests": requests})
+            .execute()
+        )
+    except Exception as exc:
+        request_kinds = [next(iter(request)) for request in requests]
+        label = f" ({context})" if context else ""
+        raise RuntimeError(
+            f"Docs batchUpdate failed{label}: {len(requests)} request(s) "
+            f"[{', '.join(request_kinds[:8])}"
+            f"{', ...' if len(request_kinds) > 8 else ''}]: {exc}"
+        ) from exc
 
 
 def insert_table_block(
@@ -82,6 +98,7 @@ def insert_table_block(
     table,
     insert_index: int,
 ) -> int:
+    insert_index = get_tab_insert_index(docs_service, doc_id, tab_id)
     rows = len(table.table_rows)
     columns = max(len(row) for row in table.table_rows)
 
@@ -128,6 +145,23 @@ def insert_table_block(
     return get_tab_insert_index(docs_service, doc_id, tab_id)
 
 
+def flush_text_batch(
+    docs_service,
+    doc_id: str,
+    text_batch: list,
+    tab_id: str,
+    insert_index: int,
+) -> int:
+    text_requests, list_batches, _length = build_markdown_requests_from_blocks(
+        text_batch, tab_id, insert_index
+    )
+    if text_requests:
+        execute_requests(docs_service, doc_id, text_requests)
+    for batch in list_batches:
+        execute_requests(docs_service, doc_id, batch)
+    return get_tab_insert_index(docs_service, doc_id, tab_id)
+
+
 def append_markdown_content(
     docs_service,
     doc_id: str,
@@ -141,24 +175,21 @@ def append_markdown_content(
     for block in blocks:
         if block.kind == BlockKind.TABLE:
             if text_batch:
-                text_requests, length = build_markdown_requests_from_blocks(
-                    text_batch, tab_id, insert_index
+                insert_index = flush_text_batch(
+                    docs_service, doc_id, text_batch, tab_id, insert_index
                 )
-                if text_requests:
-                    execute_requests(docs_service, doc_id, text_requests)
-                insert_index += length
                 text_batch.clear()
 
+            insert_index = get_tab_insert_index(docs_service, doc_id, tab_id)
             insert_index = insert_table_block(docs_service, doc_id, tab_id, block, insert_index)
             continue
 
         text_batch.append(block)
 
     if text_batch:
-        text_requests, length = build_markdown_requests_from_blocks(text_batch, tab_id, insert_index)
-        if text_requests:
-            execute_requests(docs_service, doc_id, text_requests)
-        insert_index += length
+        insert_index = flush_text_batch(
+            docs_service, doc_id, text_batch, tab_id, insert_index
+        )
 
     return insert_index
 
@@ -208,7 +239,14 @@ def process_content_and_images(
             last_index = match.end()
             continue
 
-        absolute_img_path = resolve_image_path(
+        temp_image_path: str | None = None
+        if img_ref.lower().startswith("data:"):
+            print(f"  Decoding embedded image: {alt_text}")
+            temp_image_path = materialize_data_uri_image(img_ref)
+            if temp_image_path is None:
+                print(f"  Warning: could not decode embedded image '{alt_text}'")
+
+        absolute_img_path = temp_image_path or resolve_image_path(
             img_ref, note_directory, vault_path, attachment_folder_setting
         )
         uploaded = (
@@ -229,18 +267,35 @@ def process_content_and_images(
                                 "location": {"tabId": tab_id, "index": insert_index},
                             }
                         },
-                        make_insert_text_request("\n", tab_id, insert_index + 1),
                     ],
+                    context=f"inline image '{alt_text}'",
                 )
-                insert_index += 2
+                insert_index = get_tab_insert_index(docs_service, doc_id, tab_id)
+                execute_requests(
+                    docs_service,
+                    doc_id,
+                    [make_insert_text_request("\n", tab_id, insert_index)],
+                    context=f"newline after image '{alt_text}'",
+                )
+                insert_index = get_tab_insert_index(docs_service, doc_id, tab_id)
             finally:
                 if not try_revoke_public_image_access(drive_service, uploaded):
                     pending_image_revocations.append(uploaded)
+                if temp_image_path:
+                    try:
+                        os.unlink(temp_image_path)
+                    except OSError:
+                        pass
         else:
+            if temp_image_path:
+                try:
+                    os.unlink(temp_image_path)
+                except OSError:
+                    pass
             insert_index = append_markdown_content(
                 docs_service,
                 doc_id,
-                f"[Image not found: {alt_text} ({img_ref})]\n",
+                format_missing_image_text(alt_text, img_ref),
                 tab_id,
                 insert_index,
             )
@@ -438,6 +493,8 @@ def run_migration(
         return
 
     print(f"Found {len(work_items)} folders with markdown to migrate.")
+    print(f"Migration engine version: {MIGRATION_ENGINE_VERSION}")
+    print(f"Loaded from: {os.path.dirname(os.path.abspath(__file__))}")
 
     for i, work_item in enumerate(work_items):
         try:
