@@ -2,7 +2,7 @@ import os
 import re
 import time
 
-from .constants import DRIVE_MIGRATION_FOLDER_NAME, MILLISECONDS_BETWEEN_FOLDERS, MIGRATION_ENGINE_VERSION
+from .constants import MILLISECONDS_BETWEEN_FOLDERS, MIGRATION_ENGINE_VERSION
 from .docs_builder import (
     _find_tab,
     build_markdown_requests_from_blocks,
@@ -477,6 +477,7 @@ def run_migration(
     docs_service,
     drive_service,
     vault_path: str,
+    drive_migration_folder_name: str,
 ) -> None:
     from .vault import collect_folders_with_markdown
 
@@ -484,8 +485,8 @@ def run_migration(
     if attachment_folder_setting:
         print(f"Obsidian attachment folder: '{attachment_folder_setting}'")
 
-    migration_root_id = ensure_drive_folder(drive_service, DRIVE_MIGRATION_FOLDER_NAME, None)
-    print(f"Drive output folder: '{DRIVE_MIGRATION_FOLDER_NAME}' [{migration_root_id}]")
+    migration_root_id = ensure_drive_folder(drive_service, drive_migration_folder_name, None)
+    print(f"Drive output folder: '{drive_migration_folder_name}' [{migration_root_id}]")
 
     work_items = collect_folders_with_markdown(vault_path)
     if not work_items:

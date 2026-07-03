@@ -11,12 +11,13 @@ def main() -> None:
     credentials_path = r"C:\Obsidian Migration\[secret].json"
     token_folder = r"C:\Obsidian Migration\TokenStore"
     token_path = f"{token_folder}/token.json"
+    drive_migration_folder_name = "Notebooks"
 
     validate_configuration(vault_path, credentials_path, token_folder)
 
     print("Initializing Google API Services...")
     docs_service, drive_service = get_google_services(credentials_path, token_path)
-    run_migration(docs_service, drive_service, vault_path)
+    run_migration(docs_service, drive_service, vault_path, drive_migration_folder_name)
 
 
 if __name__ == "__main__":

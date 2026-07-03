@@ -1,4 +1,3 @@
-DRIVE_MIGRATION_FOLDER_NAME = "Obsidian Migration"
 MIGRATION_COMPLETE_MARKER = "obsidian-migration-complete:v1"
 MIGRATION_ENGINE_VERSION = "2026-07-01-embedded-images"
 
