@@ -1,4 +1,4 @@
-# Obsidian to Google Docs Migration
+# Obsidian Vault to Google Docs Migration
 
 Migrate an Obsidian vault to Google Drive as Google Docs. Each vault folder that contains markdown notes becomes one Google Doc with a tab per note. Folder structure, headings, lists, tables, links, and embedded images are preserved where supported.
 
